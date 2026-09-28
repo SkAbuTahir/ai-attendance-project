@@ -1,0 +1,8 @@
+/.agents
+/.qodo
+/.streamlit
+/streamlit/secrets.toml
+secrets.toml
+__pycache__/
+*.pyc
+*.pyo
