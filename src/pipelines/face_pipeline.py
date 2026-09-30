@@ -20,10 +20,18 @@ def load_dlib_models():
     return detector, sp, facerec
 
 
-def get_face_embeddings(image_np):
+def get_face_embeddings(image_np, upsample=1):
     detector, sp, facerec = load_dlib_models()
-    # upsample=2 improves detection of smaller/distant faces
-    faces = detector(image_np, 2)
+    if image_np.dtype != np.uint8:
+        image_np = (image_np * 255).astype(np.uint8)
+    if image_np.ndim == 3 and image_np.shape[2] == 4:
+        image_np = image_np[:, :, :3]
+    # try requested upsample, then fall back through lower values
+    faces = detector(image_np, upsample)
+    for fallback in range(upsample - 1, -1, -1):
+        if len(faces) > 0:
+            break
+        faces = detector(image_np, fallback)
     encodings = []
     for face in faces:
         shape = sp(image_np, face)
@@ -52,7 +60,7 @@ def get_trained_model():
     # Need at least 2 classes for SVC; fall back to nearest-neighbour only
     clf = None
     if len(set(y)) >= 2:
-        clf = SVC(kernel='linear', probability=True, class_weight='balanced')
+        clf = SVC(kernel='linear', class_weight='balanced')
         try:
             clf.fit(X, y)
         except ValueError:
@@ -77,37 +85,43 @@ def _best_distance(X_train, y_train, student_id, query_encoding):
     return min(distances) if distances else float('inf')
 
 
-def predict_attendance(class_image_np):
-    encodings = get_face_embeddings(class_image_np)
-    detected_student = {}
-
-    model_data = get_trained_model()
-    if not model_data:
-        return detected_student, [], len(encodings)
-
+def _match_encoding(encoding, model_data):
     clf = model_data['clf']
     X_train = model_data['X']
     y_train = model_data['y']
-
     all_students = sorted(list(set(y_train)))
-    DISTANCE_THRESHOLD = 0.55   # dlib recommended ≤0.6; tighter = fewer false positives
-    CONFIDENCE_THRESHOLD = 0.45  # minimum SVC probability to accept a prediction
 
+    if clf is not None and len(all_students) >= 2:
+        predicted_id = clf.predict([encoding])[0]
+    else:
+        predicted_id = all_students[0]
+
+    dist = _best_distance(X_train, y_train, predicted_id, encoding)
+    return predicted_id if dist <= 0.6 else None, all_students
+
+
+def identify_student(selfie_np):
+    """For single-face selfie login. Returns (detected_dict, all_ids, num_faces)."""
+    encodings = get_face_embeddings(selfie_np, upsample=1)
+    detected_student = {}
+    model_data = get_trained_model()
+    if not model_data:
+        return detected_student, [], len(encodings)
     for encoding in encodings:
-        if clf is not None and len(all_students) >= 2:
-            proba = clf.predict_proba([encoding])[0]
-            best_idx = int(np.argmax(proba))
-            best_conf = proba[best_idx]
-            predicted_id = clf.classes_[best_idx]
-
-            if best_conf < CONFIDENCE_THRESHOLD:
-                continue
-        else:
-            predicted_id = all_students[0]
-
-        dist = _best_distance(X_train, y_train, predicted_id, encoding)
-
-        if dist <= DISTANCE_THRESHOLD:
+        predicted_id, all_students = _match_encoding(encoding, model_data)
+        if predicted_id is not None:
             detected_student[predicted_id] = True
+    return detected_student, list(set(model_data['y'])), len(encodings)
 
-    return detected_student, all_students, len(encodings)
+
+def predict_attendance(class_image_np):
+    encodings = get_face_embeddings(class_image_np, upsample=2)
+    detected_student = {}
+    model_data = get_trained_model()
+    if not model_data:
+        return detected_student, [], len(encodings)
+    for encoding in encodings:
+        predicted_id, all_students = _match_encoding(encoding, model_data)
+        if predicted_id is not None:
+            detected_student[predicted_id] = True
+    return detected_student, list(set(model_data['y'])), len(encodings)

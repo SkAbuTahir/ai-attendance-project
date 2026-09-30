@@ -106,6 +106,11 @@ def style_base_layout():
 
             button:hover{
                 transform :scale(1.05)}
+
+            /* Mirror camera preview only — does not affect captured image */
+            video {
+                transform: scaleX(-1) !important;
+            }
         </style>  
 
                 """
